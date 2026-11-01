@@ -24,8 +24,6 @@ public class MainActivity extends Activity {
     private static final class GameView extends View {
         private static final int WIDTH = 420;
         private static final int HEIGHT = 800;
-        private static final int TOWER_COST = 50;
-        private static final float ENEMY_RADIUS = 12f;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final List<Tower> towers = new ArrayList<>();
         private final List<Enemy> enemies = new ArrayList<>();
@@ -34,8 +32,8 @@ public class MainActivity extends Activity {
         private final List<Point> pads = new ArrayList<>();
         private long previousFrame;
         private long spawnTimer;
-        private int gold = 150;
-        private int lives = 15;
+        private int gold = GameBalance.INITIAL_GOLD;
+        private int lives = GameBalance.INITIAL_LIVES;
         private int wave = 0;
         private int spawned = 0;
         private int waveSize = 0;
@@ -149,8 +147,8 @@ public class MainActivity extends Activity {
         private void drawEnemies(Canvas canvas) {
             for (Enemy enemy : enemies) {
                 Point p = pointOnRoute(enemy.distance);
-                circle(canvas, p.x, p.y + 2, ENEMY_RADIUS + 2, Color.argb(70, 0, 0, 0));
-                circle(canvas, p.x, p.y, ENEMY_RADIUS, enemy.color);
+                circle(canvas, p.x, p.y + 2, enemy.type.radius + 2, Color.argb(70, 0, 0, 0));
+                circle(canvas, p.x, p.y, enemy.type.radius, enemy.type.color);
                 circle(canvas, p.x - 4, p.y - 3, 2, Color.WHITE);
                 circle(canvas, p.x + 4, p.y - 3, 2, Color.WHITE);
                 paint.setColor(Color.rgb(30, 35, 35));
@@ -173,11 +171,11 @@ public class MainActivity extends Activity {
             if (gameOver) {
                 text(canvas, "TAP TO PLAY AGAIN", 117, 767, 18, Color.WHITE, true);
             } else if (waveRunning) {
-                text(canvas, "Towers cost " + TOWER_COST + " gold  |  Wave " + wave + " in progress", 32, 766, 15, Color.WHITE, true);
+                text(canvas, "Towers cost " + GameBalance.BASIC_TOWER.cost + " gold  |  Wave " + wave + " in progress", 32, 766, 15, Color.WHITE, true);
             } else {
                 text(canvas, wave == 0 ? "TAP HERE TO START WAVE 1" : "TAP HERE TO START WAVE " + (wave + 1), 75, 766, 17, Color.WHITE, true);
             }
-            text(canvas, "Tap a + pad to build a tower (" + TOWER_COST + ")", 67, 717, 14, Color.rgb(255, 237, 177), false);
+            text(canvas, "Tap a + pad to build a tower (" + GameBalance.BASIC_TOWER.cost + ")", 67, 717, 14, Color.rgb(255, 237, 177), false);
         }
 
         private void drawGameOver(Canvas canvas) {
@@ -198,10 +196,9 @@ public class MainActivity extends Activity {
             if (waveRunning) {
                 spawnTimer -= (long) (dt * 1000);
                 if (spawned < waveSize && spawnTimer <= 0) {
-                    float hp = 38 + wave * 13;
-                    enemies.add(new Enemy(hp, hp, 48 + wave * 2.2f, wave % 4 == 0 ? Color.rgb(185, 133, 255) : Color.rgb(238, 103, 91)));
+                    enemies.add(new Enemy(GameBalance.enemyTypeForWave(wave), wave));
                     spawned++;
-                    spawnTimer = Math.max(420, 1050 - wave * 35);
+                    spawnTimer = GameBalance.spawnIntervalMs(wave);
                 }
             }
 
@@ -214,15 +211,15 @@ public class MainActivity extends Activity {
                     float targetDistance = -1;
                     for (Enemy enemy : enemies) {
                         Point p = pointOnRoute(enemy.distance);
-                        if (distance(origin.x, origin.y, p.x, p.y) <= 135 && enemy.distance > targetDistance) {
+                        if (distance(origin.x, origin.y, p.x, p.y) <= tower.type.range && enemy.distance > targetDistance) {
                             target = enemy;
                             targetDistance = enemy.distance;
                         }
                     }
                     if (target != null) {
                         Point p = pointOnRoute(target.distance);
-                        bolts.add(new Bolt(origin.x, origin.y, target, p.x, p.y));
-                        tower.cooldown = 0.48f;
+                        bolts.add(new Bolt(origin.x, origin.y, target, tower.type));
+                        tower.cooldown = tower.type.fireIntervalSeconds;
                     }
                 }
             }
@@ -237,9 +234,9 @@ public class MainActivity extends Activity {
                 float dx = target.x - bolt.x;
                 float dy = target.y - bolt.y;
                 float length = (float) Math.sqrt(dx * dx + dy * dy);
-                float travel = 390 * dt;
-                if (length <= travel + ENEMY_RADIUS) {
-                    bolt.target.health -= 24;
+                float travel = bolt.targetingTower.projectileSpeed * dt;
+                if (length <= travel + bolt.target.type.radius) {
+                    bolt.target.health -= bolt.targetingTower.damage;
                     boltIterator.remove();
                 } else {
                     bolt.x += dx / length * travel;
@@ -250,7 +247,7 @@ public class MainActivity extends Activity {
             while (enemyIterator.hasNext()) {
                 Enemy enemy = enemyIterator.next();
                 if (enemy.health <= 0) {
-                    gold += 12;
+                    gold += enemy.type.reward;
                     enemyIterator.remove();
                 } else if (enemy.distance >= routeLength()) {
                     lives--;
@@ -264,15 +261,15 @@ public class MainActivity extends Activity {
         private void startWave() {
             if (waveRunning || gameOver) return;
             wave++;
-            waveSize = 6 + wave * 2;
+            waveSize = GameBalance.enemiesInWave(wave);
             spawned = 0;
             spawnTimer = 0;
             waveRunning = true;
         }
 
         private void resetGame() {
-            gold = 150;
-            lives = 15;
+            gold = GameBalance.INITIAL_GOLD;
+            lives = GameBalance.INITIAL_LIVES;
             wave = 0;
             spawned = 0;
             waveSize = 0;
@@ -302,9 +299,10 @@ public class MainActivity extends Activity {
             }
             for (int i = 0; i < pads.size(); i++) {
                 Point pad = pads.get(i);
-                if (distance(x, y, pad.x, pad.y) < 34 && findTower(i) == null && gold >= TOWER_COST) {
-                    towers.add(new Tower(i));
-                    gold -= TOWER_COST;
+                if (distance(x, y, pad.x, pad.y) < 34 && findTower(i) == null
+                        && gold >= GameBalance.BASIC_TOWER.cost) {
+                    towers.add(new Tower(i, GameBalance.BASIC_TOWER));
+                    gold -= GameBalance.BASIC_TOWER.cost;
                     invalidate();
                     return true;
                 }
@@ -374,25 +372,27 @@ public class MainActivity extends Activity {
 
         private static final class Tower {
             final int pad;
+            final TowerType type;
             float cooldown;
 
-            Tower(int pad) {
+            Tower(int pad, TowerType type) {
                 this.pad = pad;
+                this.type = type;
             }
         }
 
         private static final class Enemy {
+            final EnemyType type;
             float health;
             final float maxHealth;
             final float speed;
-            final int color;
             float distance;
 
-            Enemy(float health, float maxHealth, float speed, int color) {
-                this.health = health;
-                this.maxHealth = maxHealth;
-                this.speed = speed;
-                this.color = color;
+            Enemy(EnemyType type, int wave) {
+                this.type = type;
+                this.health = type.healthForWave(wave);
+                this.maxHealth = health;
+                this.speed = type.speedForWave(wave);
             }
         }
 
@@ -400,11 +400,13 @@ public class MainActivity extends Activity {
             float x;
             float y;
             final Enemy target;
+            final TowerType targetingTower;
 
-            Bolt(float x, float y, Enemy target, float targetX, float targetY) {
+            Bolt(float x, float y, Enemy target, TowerType targetingTower) {
                 this.x = x;
                 this.y = y;
                 this.target = target;
+                this.targetingTower = targetingTower;
             }
         }
     }
